@@ -51,15 +51,22 @@ namespace PapyrusCs.Strategies.Dataflow
         public string FileFormat { get; set; }
         public int FileQuality { get; set; }
         public int Dimension { get; set; }
+        public string Profile { get; set; }
 
         public bool IsUpdate => isUpdate;
         public bool DeleteExistingUpdateFolder { get; set; }
 
         public int NewInitialZoomLevel { get; set; }
         public int NewLastZoomLevel { get; set; }
+        private string pathToDb;
+        private string pathToDbUpdate;
+        private string pathToDbBackup;
+        private string pathToMapUpdate;
+        private string pathToMap;
 
         public void RenderInitialLevel()
         {
+            World.ChunkPool = new ChunkPool();
             graphics.DefaultQuality = FileQuality;
           
 
@@ -75,59 +82,84 @@ namespace PapyrusCs.Strategies.Dataflow
 
             Console.WriteLine(chunkKeys.Count);
 
+            var t = Math.Max(1, this.RenderSettings.MaxNumberOfThreads);
+
+            var tsave = FileFormat == "webp" ? t : 2;
+
             var getOptions = new ExecutionDataflowBlockOptions()
-                {BoundedCapacity = 64, EnsureOrdered = false, MaxDegreeOfParallelism = 1};
-            var chunkCreatorOptions = new ExecutionDataflowBlockOptions()
-                {BoundedCapacity = 16, EnsureOrdered = false, MaxDegreeOfParallelism = Math.Max(1, this.RenderSettings.MaxNumberOfThreads/2)};
+                {BoundedCapacity = 2*t, EnsureOrdered = false, MaxDegreeOfParallelism = 1};
             var bitmapOptions = new ExecutionDataflowBlockOptions()
-                {BoundedCapacity = 32, EnsureOrdered = false, MaxDegreeOfParallelism = Math.Max(1, this.RenderSettings.MaxNumberOfThreads)};
+                {BoundedCapacity = 2 * t, EnsureOrdered = false, MaxDegreeOfParallelism = t };
             var saveOptions = new ExecutionDataflowBlockOptions()
-                {BoundedCapacity = 16, EnsureOrdered = false, MaxDegreeOfParallelism = Math.Max(1, this.RenderSettings.MaxNumberOfThreads/4)};
+                {BoundedCapacity = 2 * t, EnsureOrdered = false, MaxDegreeOfParallelism = tsave};
             var dbOptions = new ExecutionDataflowBlockOptions()
-                {BoundedCapacity = 16, EnsureOrdered = false, MaxDegreeOfParallelism = 1};
+                {BoundedCapacity = 2 * t, EnsureOrdered = false, MaxDegreeOfParallelism = 1};
             var groupedToTiles = chunkKeys.GroupBy(x => x.Subchunks.First().Value.GetXZGroup(ChunksPerDimension))
                 .ToList();
             Console.WriteLine($"Grouped by {ChunksPerDimension} to {groupedToTiles.Count} tiles");
             var average = groupedToTiles.Average(x => x.Count());
-            Console.WriteLine($"Average of {average} chunks per tile");
+            Console.WriteLine($"Average of {average:0.0} chunks per tile");
 
-            var getDataBlock = new GetDataBlock(World, renderedSubchunks, getOptions);
-            var createChunkBlock = new CreateDataBlock(World, chunkCreatorOptions);
-            var bitmapBlock = new BitmapRenderBlock<TImage>(TextureDictionary, TexturePath, RenderSettings, graphics,
-                ChunkSize, ChunksPerDimension, bitmapOptions);
-            var saveBitmapBlock = new SaveBitmapBlock<TImage>(isUpdate ? pathToMapUpdate : pathToMap, NewInitialZoomLevel, FileFormat,
-                saveOptions, graphics);
+            var getDataBlock = new GetDataBlock(World, renderedSubchunks, getOptions, ForceOverwrite);
+            //var createChunkBlock = new CreateDataBlock(World, chunkCreatorOptions);
+            //var bitmapBlock = new BitmapRenderBlock<TImage>(TextureDictionary, TexturePath, World.ChunkPool, RenderSettings, graphics, ChunkSize, ChunksPerDimension, bitmapOptions);
+
+            var createAndRender = new CreateChunkAndRenderBlock<TImage>(World, TextureDictionary, TexturePath, RenderSettings, graphics, ChunkSize, ChunksPerDimension, bitmapOptions);
+
+            var saveBitmapBlock = new SaveBitmapBlock<TImage>(isUpdate ? pathToMapUpdate : pathToMap, NewInitialZoomLevel, FileFormat, saveOptions, graphics);
+
+            var batchBlock = new BatchBlock<IEnumerable<SubChunkData>>(128, new GroupingDataflowBlockOptions() {BoundedCapacity = 128*8, EnsureOrdered = false});
 
             // Todo, put in own class
             var inserts = 0;
             var updates = 0;
-            var dbBLock = new ActionBlock<IEnumerable<SubChunkData>>(datas =>
+            var r = new Random();
+            var dbBLock = new ActionBlock<IEnumerable<IEnumerable<SubChunkData>>>(data =>
             {
-                var toInsert = datas.Where(x => x.FoundInDb == false)
-                    .Select(x => new Checksum {Crc32 = x.Crc32, LevelDbKey = x.Key}).ToList();
+                if (data == null)
+                    return;
 
-                if (toInsert.Count > 0)
+                var datas = data.Where(x => x != null).SelectMany(x => x).ToList();
+                try
                 {
-                    db.BulkInsert(toInsert);
-                    inserts += toInsert.Count;
+                    /*
+                    if (r.Next(100) == 0)
+                    {
+                        throw new ArgumentOutOfRangeException("Test Error in dbBLock");
+                    }*/
+                    
+                    var toInsert = datas.Where(x => x.FoundInDb == false)
+                        .Select(x => new Checksum {Crc32 = x.Crc32, LevelDbKey = x.Key, Profile = Profile}).ToList();
+
+                    if (toInsert.Count > 0)
+                    {
+                        db.BulkInsert(toInsert);
+                        inserts += toInsert.Count;
+                    }
+
+                    var toUpdate = datas.Where(x => x.FoundInDb).Select(x => new Checksum()
+                        {Id = x.ForeignDbId, Crc32 = x.Crc32, LevelDbKey = x.Key, Profile = Profile}).ToList();
+                    if (toUpdate.Count > 0)
+                    {
+                        db.BulkUpdate(toUpdate);
+                        updates += toUpdate.Count;
+                    }
+
                 }
-
-                var toUpdate = datas.Where(x => x.FoundInDb).Select(x => new Checksum()
-                    {Id = x.ForeignDbId, Crc32 = x.Crc32, LevelDbKey = x.Key}).ToList();
-                if (toUpdate.Count > 0)
+                catch (Exception ex)
                 {
-                    db.BulkUpdate(toUpdate);
-                    updates += toUpdate.Count;
+                    Console.WriteLine("Error in CreateChunkAndRenderBlock: " + ex.Message);
                 }
 
             }, dbOptions);
 
-            bitmapBlock.ChunksRendered += (sender, args) => ChunksRendered?.Invoke(sender, args);
+            createAndRender.ChunksRendered += (sender, args) => ChunksRendered?.Invoke(sender, args);
 
-            getDataBlock.Block.LinkTo(createChunkBlock.Block, new DataflowLinkOptions() {PropagateCompletion = true,});
-            createChunkBlock.Block.LinkTo(bitmapBlock.Block, new DataflowLinkOptions() {PropagateCompletion = true});
-            bitmapBlock.Block.LinkTo(saveBitmapBlock.Block, new DataflowLinkOptions() {PropagateCompletion = true});
-            saveBitmapBlock.Block.LinkTo(dbBLock, new DataflowLinkOptions() {PropagateCompletion = true});
+            getDataBlock.Block.LinkTo(createAndRender.Block, new DataflowLinkOptions() {PropagateCompletion = true,});
+            createAndRender.Block.LinkTo(saveBitmapBlock.Block, new DataflowLinkOptions() {PropagateCompletion = true});
+            saveBitmapBlock.Block.LinkTo(batchBlock, new DataflowLinkOptions() {PropagateCompletion = true});
+            batchBlock.LinkTo(dbBLock, new DataflowLinkOptions {PropagateCompletion = true});
+            //saveBitmapBlock.Block.LinkTo(dbBLock, new DataflowLinkOptions() {PropagateCompletion = true});
 
             int postCount = 0;
             foreach (var groupedToTile in groupedToTiles)
@@ -143,7 +175,7 @@ namespace PapyrusCs.Strategies.Dataflow
                 if (postCount > 1000)
                 {
                     postCount = 0;
-                    Console.WriteLine($"\n{inserts}, {updates}");
+                    Console.WriteLine($"\nQueue Stat: GetData {getDataBlock.InputCount} Render {createAndRender.InputCount} Save {saveBitmapBlock.InputCount} Db {dbBLock.InputCount}");
                 }
             }
 
@@ -152,20 +184,20 @@ namespace PapyrusCs.Strategies.Dataflow
             getDataBlock.Block.Complete();
             while (!dbBLock.Completion.Wait(1000))
             {
-                Console.WriteLine(
-                    $"\n{getDataBlock.ProcessedCount} {createChunkBlock.ProcessedCount} {bitmapBlock.ProcessedCount} {saveBitmapBlock.ProcessedCount}");
+                Console.WriteLine($"\nQueue Stat: GetData {getDataBlock.InputCount} Render {createAndRender.InputCount} Save {saveBitmapBlock.InputCount} Db {dbBLock.InputCount}");
             }
             Console.WriteLine("DbUpdate complete");
 
 
             Console.WriteLine($"\n{inserts}, {updates}");
-            Console.WriteLine(
-                $"\n{getDataBlock.ProcessedCount} {createChunkBlock.ProcessedCount} {bitmapBlock.ProcessedCount} {saveBitmapBlock.ProcessedCount}");
+            Console.WriteLine($"\n{getDataBlock.ProcessedCount} {createAndRender.ProcessedCount}  {saveBitmapBlock.ProcessedCount}");
         }
 
 
         protected Func<IEnumerable<int>, ParallelOptions, Action<int>, ParallelLoopResult> OuterLoopStrategy =>
             Parallel.ForEach;
+
+        public bool ForceOverwrite { get; set; }
 
         public void RenderZoomLevels()
         {
@@ -304,11 +336,7 @@ namespace PapyrusCs.Strategies.Dataflow
 
         public event EventHandler<ChunksRenderedEventArgs> ChunksRendered;
         public event EventHandler<ZoomRenderedEventArgs> ZoomLevelRenderd;
-        private string pathToDb;
-        private string pathToDbUpdate;
-        private string pathToDbBackup;
-        private string pathToMapUpdate;
-        private string pathToMap;
+       
 
         public void Init()
         {
@@ -316,8 +344,8 @@ namespace PapyrusCs.Strategies.Dataflow
             pathToDbUpdate = Path.Combine(OutputPath, "chunks-update.sqlite");
             pathToDbBackup = Path.Combine(OutputPath, "chunks-backup.sqlite");
 
-            pathToMapUpdate = Path.Combine(OutputPath, "update", $"dim{Dimension}");
-            pathToMap = Path.Combine(OutputPath, "map", $"dim{Dimension}");
+            pathToMapUpdate = Path.Combine(OutputPath, "update", "dim" + Dimension + (string.IsNullOrEmpty(Profile) ? "" : $"_{Profile}"));
+            pathToMap = Path.Combine(OutputPath, "map", "dim" + Dimension + (string.IsNullOrEmpty(Profile) ? "" : $"_{Profile}"));
 
             isUpdate = File.Exists(pathToDb);
 
@@ -366,12 +394,13 @@ namespace PapyrusCs.Strategies.Dataflow
             db = c.CreateDbContext(pathToDbUpdate, true);
             db.Database.Migrate();
 
-            var settings = db.Settings.FirstOrDefault(x => x.Dimension == Dimension);
+            var settings = db.Settings.FirstOrDefault(x => x.Dimension == Dimension && x.Profile == Profile);
             if (settings != null)
             {
                 this.FileFormat = settings.Format;
                 this.FileQuality = settings.Quality;
-                Console.WriteLine("Overriding settings with: Format {0}, Quality {1}", FileFormat, FileQuality);
+                this.ChunksPerDimension = settings.ChunksPerDimension;
+                Console.WriteLine("Overriding settings with: Format {0}, Quality {1} ChunksPerDimension {2}", FileFormat, FileQuality, ChunksPerDimension);
 
                 settings.MaxZoom = NewInitialZoomLevel;
                 settings.MinZoom = NewLastZoomLevel;
@@ -380,19 +409,22 @@ namespace PapyrusCs.Strategies.Dataflow
             }
             else
             {
+                
                 settings = new Settings()
                 {
                     Dimension = Dimension,
+                    Profile = Profile,
                     Quality = FileQuality,
                     Format = FileFormat,
                     MaxZoom = this.NewInitialZoomLevel,
                     MinZoom = this.NewLastZoomLevel,
+                    ChunksPerDimension = db.Settings.FirstOrDefault()?.ChunksPerDimension ?? this.ChunksPerDimension
                 };
                 db.Add(settings);
                 db.SaveChanges();
             }
 
-            renderedSubchunks = db.Checksums.ToImmutableDictionary(
+            renderedSubchunks = db.Checksums.Where(x => x.Profile == Profile).ToImmutableDictionary(
                 x => new LevelDbWorldKey2(x.LevelDbKey), x => new KeyAndCrc(x.Id, x.Crc32));
             Console.WriteLine($"Found {renderedSubchunks.Count} subchunks which are already rendered");
         }
@@ -430,12 +462,12 @@ namespace PapyrusCs.Strategies.Dataflow
             if (Directory.Exists(pathToMapUpdate))
             {
                 var filesToCopy = Directory.EnumerateFiles(pathToMapUpdate, "*." + FileFormat, SearchOption.AllDirectories);
+                Console.WriteLine($"Copying {filesToCopy.Count()} to {pathToMap}");
                 foreach (var f in filesToCopy)
                 {
                     var newPath = f.Replace(pathToMapUpdate, pathToMap);
                     FileInfo fi = new FileInfo(newPath);
                     fi.Directory?.Create();
-                    Console.WriteLine("Copying {0} to {1}", f, newPath);
                     File.Copy(f, newPath, true);
                 }
             }

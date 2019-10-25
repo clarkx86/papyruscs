@@ -1,11 +1,14 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
 using fNbt;
 using leveldb_sharp_std;
+using Maploader.Core;
+using PapyrusCs.Database;
 
 namespace Maploader.World
 {
@@ -15,6 +18,16 @@ namespace Maploader.World
 
         public void Open(string pathDb)
         {
+            if (pathDb == null)
+                throw new ArgumentNullException(nameof(pathDb));
+
+            if (!pathDb.ToLowerInvariant().EndsWith("db") &&
+                !pathDb.ToLowerInvariant().EndsWith("db" + Path.DirectorySeparatorChar) &&
+                !pathDb.ToLowerInvariant().EndsWith("db" + Path.AltDirectorySeparatorChar))
+            {
+                pathDb = Path.Combine(pathDb, "db");
+            }
+
             var options = new Options();
             options.Compression = CompressionType.ZlibRaw;
 
@@ -53,7 +66,18 @@ namespace Maploader.World
 
         public Chunk GetChunk(int x, int z, ChunkData data)
         {
-            Chunk c = new Chunk(x, z);
+            Chunk c;
+            if (ChunkPool != null)
+            {
+                c = ChunkPool.Get();
+                c.X = x;
+                c.Z = z;
+            }
+            else
+            {
+               c = new Chunk(x, z);
+            }
+
             foreach (var subChunkRaw in data.SubChunks)
             {
                 CopySubChunkToChunk(c, subChunkRaw.Index, subChunkRaw.Data);
@@ -86,7 +110,18 @@ namespace Maploader.World
 
             if (!haveData) return null;
 
-            Chunk c = new Chunk(x, z);
+            Chunk c;
+            if (ChunkPool != null)
+            {
+                c = ChunkPool.Get();
+                c.X = x;
+                c.Z = z;
+            }
+            else
+            {
+                c = new Chunk(x, z);
+            }
+
             foreach (var subChunkRaw in subChunks)
             {
                 CopySubChunkToChunk(c, subChunkRaw);
@@ -163,6 +198,8 @@ namespace Maploader.World
 
         }
 
+        public ChunkPool ChunkPool { get; set; }
+
         private void CopySubChunkToChunk(Chunk chunk, KeyValuePair<byte, byte[]> subChunkRawData)
         {
             CopySubChunkToChunk(chunk, subChunkRawData.Key, subChunkRawData.Value);
@@ -198,12 +235,12 @@ namespace Maploader.World
                             int y = position & 0xF;
                             int z = (position >> 4) & 0xF;
 
-                            chunk.SetBlockId(x, yOffset + y, z,
-                                new BlockData(Table.Lookups[Table.CreateKey(blockId, 0)].name, (blockData))
-                                {
-                                    Version = 0,
-                                },
-                                true);
+                            BlockData b = new BlockData(Table.Lookups[Table.CreateKey(blockId, 0)].name, (blockData))
+                            {
+                                Version = 0,
+                            };
+
+                            chunk.SetBlockId(x, yOffset + y, z, ref b, true);
                         }
 
                         break;
@@ -262,8 +299,9 @@ namespace Maploader.World
 
                                     try
                                     {
+                                        var b = localPalette.Keys[state];
                                         // Todo: doppelte keys treten immer noch auf!?
-                                        chunk.SetBlockId(x, yOffset + y, z, localPalette.Keys[state], true);
+                                        chunk.SetBlockId(x, yOffset + y, z, ref b, true);
                                     }
                                     catch (Exception ex)
                                     {
@@ -390,6 +428,78 @@ namespace Maploader.World
                         Index = kvp.Key,
                         Data = data,
                         Key = kvp.Value.Key,
+                        Crc32 = Force.Crc32.Crc32CAlgorithm.Compute(data),
+                    };
+                    ret.SubChunks.Add(subChunkData);
+                }
+            }
+
+            return ret;
+        }
+
+        public object GetChunkData(LevelDbWorldKey2 groupedChunkSubKeys)
+        {
+            throw new NotImplementedException();
+        }
+
+        public ChunkData GetChunkData(IGrouping<ulong, LevelDbWorldKey2> groupedChunkSubKeys)
+        {
+            if (db == null)
+                throw new InvalidOperationException("Open Db first");
+
+            var ret = new ChunkData
+            {
+                X = (int) ((ulong) groupedChunkSubKeys.Key >> 32),
+                Z = (int)((ulong)groupedChunkSubKeys.Key & 0xffffffff)
+            };
+
+
+            foreach (var kvp in groupedChunkSubKeys)
+            {
+                var key = kvp;
+
+                var data = db.Get(key.Key);
+                if (data != null)
+                {
+                    var subChunkData = new SubChunkData()
+                    {
+                        Index = key.SubChunkId,
+                        Data = data,
+                        Key = key.Key,
+                       // Crc32 = Force.Crc32.Crc32CAlgorithm.Compute(data),
+                    };
+                    ret.SubChunks.Add(subChunkData);
+                }
+            }
+
+            return ret;
+        }
+
+        public ChunkData GetChunkData(int x, int z)
+        {
+            if (db == null)
+                throw new InvalidOperationException("Open Db first");
+
+            var ret = new ChunkData
+            {
+                X = x,
+                Z = z,
+            };
+
+
+            foreach (var kvp in Enumerable.Range(0,15))
+            {
+                var key = CreateKey(x, z);
+                key[9] = (byte)kvp;
+
+                var data = db.Get(key);
+                if (data != null)
+                {
+                    var subChunkData = new SubChunkData()
+                    {
+                        Index = (byte)kvp,
+                        Data = data,
+                        Key = key,
                         Crc32 = Force.Crc32.Crc32CAlgorithm.Compute(data),
                     };
                     ret.SubChunks.Add(subChunkData);

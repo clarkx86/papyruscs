@@ -2,15 +2,17 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using PapyrusCs.Database;
 
 namespace PapyrusCs.Migrations
 {
     [DbContext(typeof(PapyrusContext))]
-    partial class PapyrusContextModelSnapshot : ModelSnapshot
+    [Migration("20190620000000_Profile")]
+    partial class Profile
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -25,7 +27,7 @@ namespace PapyrusCs.Migrations
 
                     b.Property<byte[]>("LevelDbKey");
 
-                    b.Property<string>("Profile");
+                    b.Property<string>("Profile").HasDefaultValue("");
 
                     b.HasKey("Id");
 
@@ -39,17 +41,15 @@ namespace PapyrusCs.Migrations
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd();
 
-                    b.Property<int>("ChunksPerDimension");
-
                     b.Property<int>("Dimension");
+
+                    b.Property<string>("Profile").HasDefaultValue("");
 
                     b.Property<string>("Format");
 
                     b.Property<int>("MaxZoom");
 
                     b.Property<int>("MinZoom");
-
-                    b.Property<string>("Profile");
 
                     b.Property<int>("Quality");
 

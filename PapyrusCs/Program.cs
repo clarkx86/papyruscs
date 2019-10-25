@@ -2,45 +2,276 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
-using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Threading;
 using CommandLine;
+using fNbt;
+using Maploader.Core;
+using Maploader.Extensions;
 using Maploader.Renderer;
 using Maploader.Renderer.Imaging;
 using Maploader.Renderer.Texture;
 using Maploader.World;
+using MoreLinq.Extensions;
+using Newtonsoft.Json;
 using PapyrusCs.Database;
 using PapyrusCs.Strategies;
 using PapyrusCs.Strategies.Dataflow;
-using PapyrusCs.Strategies.For;
 
 namespace PapyrusCs
 {
-    class Program
+    public partial class Program
     {
         private static int _totalChunksRendered = 0;
         private static int _totalChunk = 0;
-        private static Stopwatch _time;
+        private static Stopwatch _time = new Stopwatch();
         private static Stopwatch _time2 = new Stopwatch();
 
 
 
         static int Main(string[] args)
         {
-            _time = Stopwatch.StartNew();
 
-            var options = new Options();
+            var newargs = args;
 
-            Parser.Default.ParseArguments<Options>(args).WithParsed(o =>
+            if (args.Length == 0 || !(new string[]{"map", "test","find"}.Contains(args[0])))
             {
-                options = o;
-                options.Loaded = true;
+                newargs = new[] { "map" }.Concat((args)).ToArray();
+            }
 
-            });
 
+            return CommandLine.Parser.Default.ParseArguments<Options, TestOptions, FindOptions>(newargs)
+                .MapResult(
+                    (Options opts) => { opts.Loaded = true;
+                        return RunMapCommand(opts);
+                    },
+                    (TestOptions opts) => RunTestOptions(opts),
+                    (FindOptions opts) => RunFindOptions(opts),
+                    errs => 1);
+        }
+
+        private static int RunFindOptions(FindOptions opts)
+        {
+            var world = new World();
+
+            int result = 0;
+
+            if (!string.IsNullOrWhiteSpace(opts.BlockId))
+            {
+                result = FindBlockId(opts, world);
+            }
+            else
+            {
+                result = FindVillages(opts, world);
+            }
+
+            Console.WriteLine(_time.Elapsed);
+
+            return result;
+        }
+
+        private class Village
+        {
+            public string Name { get; set; }
+            public int X0 { get; set; }
+            public int X1 { get; set; }
+            public int Y0 { get; set; }
+            public int Y1 { get; set; }
+            public int Z0 { get; set; }
+            public int Z1 { get; set; }
+
+            public int XSize => Math.Abs(X0 - X1);
+            public int YSize => Math.Abs(Y0 - Y1);
+            public int ZSize => Math.Abs(Z0 - Z1);
+
+            public string Center => $"{X0 + (XSize / 2)} {Y0 + (YSize / 2)} {Z0 + (ZSize / 2)}";
+        }
+
+        private static int FindVillages(FindOptions opts, World world)
+        {
+            try
+            {
+                Console.WriteLine("Find Villages Decode. Opening world...");
+                world.Open(opts.MinecraftWorld);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Could not open world at '{opts.MinecraftWorld}'!. Did you specify the .../db folder?");
+                Console.WriteLine("The reason was:");
+                Console.WriteLine(ex.Message);
+                {
+                    return -1;
+                }
+            }
+
+            int i = 0;
+            int nextout = 2000;
+            foreach (var k in world.Keys)
+            {
+                if (i > nextout)
+                {
+                    Console.WriteLine("Key {0}", i);
+                    nextout += 50000;
+                }
+
+                i++;
+
+                if (k.Length > 8 && k[8] == 47)
+                {
+                    continue;
+                }
+
+                var village = new [] {'V', 'I', 'L', 'L', 'A','G','E'}.Select(x => (byte)x).ToArray();
+                if (k.Locate(village).Length == 0) 
+                    continue;
+
+                var data = world.GetData(k);
+
+                var golem = new[] { 'M', 'T', 'i','c','k'}.Select(x => (byte)x).ToArray();
+
+                var searchResults = data.Locate(golem);
+                if (searchResults != null && searchResults.Length > 0)
+                {
+
+                    var s = new MemoryStream(data);
+                    var nbt = new fNbt.NbtReader(s, false);
+
+                    var v = new Village();
+
+                    var result = nbt.ReadToFollowing();
+                    if (nbt.IsCompound)
+                    {
+                        result = nbt.ReadToFollowing();
+                        while (result)
+                        {
+                            if (nbt.HasName && nbt.HasValue)
+                            {
+                                var n = nbt.TagName;
+                                var val = nbt.ReadValue();
+                                //Console.WriteLine($"\t\t{n}: {val}");
+
+                                switch (n)
+                                {
+                                    case "X0":
+                                        v.X0 = Convert.ToInt32(val);
+                                        break;
+                                    case "X1":
+                                        v.X1 = Convert.ToInt32(val);
+                                        break;
+                                    case "Y0":
+                                        v.Y0 = Convert.ToInt32(val);
+                                        break;
+                                    case "Y1":
+                                        v.Y1 = Convert.ToInt32(val);
+                                        break;
+                                    case "Z0":
+                                        v.Z0 = Convert.ToInt32(val);
+                                        break;
+                                    case "Z1":
+                                        v.Z1 = Convert.ToInt32(val);
+                                        break;
+                                    default:
+                                        break;
+                                }
+
+                            }
+
+                            result = nbt.ReadToFollowing();
+
+                        }
+
+                        if (v.Y0 > 150)
+                        {
+                            Console.WriteLine("Found golem in {0}", string.Join(" ", k.Select(x => $"{x:X2}")));
+                            Console.WriteLine($"Center us {v.Center}");
+                            return 0;
+
+                        }
+
+
+                    }
+                    //var nbt2 = new fNbt.NbtFile();
+                    //nbt2.LoadFromBuffer(data, 0, data.Length, NbtCompression.None);
+
+
+                }
+
+            }
+
+            return 0;
+        }
+
+        private static int FindBlockId(FindOptions opts, World world)
+        {
+            world.ChunkPool = new ChunkPool();
+            try
+            {
+                Console.WriteLine("Find Blocks. Opening world...");
+                world.Open(opts.MinecraftWorld);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Could not open world at '{opts.MinecraftWorld}'!. Did you specify the .../db folder?");
+                Console.WriteLine("The reason was:");
+                Console.WriteLine(ex.Message);
+                {
+                    return -1;
+                }
+            }
+
+            int i = 0;
+            int nextout = 2000;
+            var keys = world.OverworldKeys.Select(x => new LevelDbWorldKey2(x)).GroupBy(x => x.XZ).Select(x => x.Key).ToList();
+            Console.WriteLine(keys.Count());
+
+            _time = Stopwatch.StartNew();
+            foreach (var key in keys)
+            {
+                i++;
+
+                var X = (int) ((ulong) key >> 32);
+                var Z = (int) ((ulong) key & 0xffffffff);
+                var cd = world.GetChunkData(X, Z);
+                var c = world.GetChunk(cd.X, cd.Z, cd);
+
+                var bells = c.Blocks.Where(x => x.Value.Block.Id == opts.BlockId);
+                foreach (var b in bells)
+                {
+                    Console.WriteLine($"Chunk {X} {Z} {c.X} {c.Z} -- Block {b.Value.X + c.X * 16} {b.Value.Z + c.Z * 16} {b.Value.Y} {b.Value.Block.Id}");
+                }
+
+                if (i > nextout)
+                {
+                    nextout += 2000;
+                    Console.WriteLine($"Reading key {i} {_time.Elapsed} {i / (_time.ElapsedMilliseconds / 1000.0)}");
+                }
+            }
+
+            Console.WriteLine($"Reading key {i}");
+            return 0;
+        }
+
+        private static int RunTestOptions(TestOptions opts)
+        {
+            if (opts.TestDbRead)
+            {
+                TestCommands.TestDbRead(opts);
+            } else if (opts.Decode)
+            {
+                TestCommands.TestDecode(opts);
+            }
+            else if (opts.Smallflow)
+            {
+                TestCommands.TestSmallFlow(opts);
+            }
+
+            return 0;
+        }
+  
+        private static int  RunMapCommand(Options options)
+        {
+            _time = Stopwatch.StartNew();
             if (!options.Loaded)
             {
                 return -1;
@@ -60,7 +291,8 @@ namespace PapyrusCs
             }
             catch (Exception)
             {
-                Console.WriteLine($"The value '{options.LimitX}' for the LimitZ parameter is not valid. Try something like -10,10");
+                Console.WriteLine(
+                    $"The value '{options.LimitX}' for the LimitZ parameter is not valid. Try something like -10,10");
                 return -1;
             }
 
@@ -77,12 +309,13 @@ namespace PapyrusCs
             }
             catch (Exception)
             {
-                Console.WriteLine($"The value '{options.LimitZ}' for the LimitZ parameter is not valid. Try something like -10,10");
+                Console.WriteLine(
+                    $"The value '{options.LimitZ}' for the LimitZ parameter is not valid. Try something like -10,10");
                 return -1;
             }
 
             options.FileFormat = options.FileFormat.ToLowerInvariant();
-            if (new string[] {"jpg", "png", "webp"}.All(x => x != options.FileFormat))
+            if (new string[] {"jpg", "png", "webp", "none"}.All(x => x != options.FileFormat))
             {
                 Console.WriteLine($"The value {options.FileFormat} is not allowed for option -f");
                 return -1;
@@ -132,20 +365,21 @@ namespace PapyrusCs
                 constraintZ = key => key.Z >= zmin1 && key.Z <= zmax1;
             }
 
-            if (options.Dimension == 1) // Nether 
-            { 
+            if (options.Dimension == 1 && options.NoAutoTrimCeiling == false)
+            {
+                // Nether
                 options.TrimCeiling = true;
                 if (options.LimitY == -1)
                 {
                     options.LimitY = 120;
                 }
             }
-            
+
+
             Console.WriteLine("Generating a list of all chunk keys in the database.\nThis could take a few minutes");
             var keys = world.GetDimension(options.Dimension).ToList();
-            allSubChunks = keys.Select(x => new LevelDbWorldKey2(x))
-                .Where(k => constraintX(k) && constraintZ(k))
-                .ToHashSet();
+            allSubChunks = Enumerable.ToHashSet(keys.Select(x => new LevelDbWorldKey2(x))
+                    .Where(k => constraintX(k) && constraintZ(k)));
 
             _totalChunk = allSubChunks.GroupBy(x => x.XZ).Count();
             Console.WriteLine($"Total Chunk count {_totalChunk}");
@@ -167,8 +401,9 @@ namespace PapyrusCs
             }
 
             const int chunkSize = 256;
-            int chunksPerDimension = 2;
+            int chunksPerDimension = options.ChunksPerDimension;
             int tileSize = chunkSize * chunksPerDimension;
+            Console.WriteLine($"Tilesize is {tileSize}x{tileSize}");
             Directory.CreateDirectory(options.OutputPath);
 
             // db stuff
@@ -176,12 +411,12 @@ namespace PapyrusCs
             var zoom = CalculateZoom(xmax, xmin, zmax, zmin, chunksPerDimension, out var extendedDia);
 
             var strat = InstanciateStrategy(options);
-            ConfigureStrategy(strat,  options, allSubChunks, extendedDia, zoom, world, textures, tileSize, chunksPerDimension, chunkSize, zmin, zmax, xmin, xmax);
+            ConfigureStrategy(strat, options, allSubChunks, extendedDia, zoom, world, textures, tileSize, chunkSize, zmin, zmax, xmin, xmax);
 
             strat.Init();
 
             // other stuff
-            
+
             strat.RenderInitialLevel();
 
             var missingTextures = strat.MissingTextures;
@@ -195,7 +430,8 @@ namespace PapyrusCs
             strat.RenderZoomLevels();
 
 
-            WriteMapHtml(tileSize, options.OutputPath, options.MapHtml, strat.GetSettings(), strat.IsUpdate);
+            WriteMapHtml(tileSize, options.OutputPath, options.MapHtml, strat.GetSettings(), strat.IsUpdate,
+                options.UseLeafletLegacy);
 
             strat.Finish();
             Console.WriteLine("Total Time {0}", _time.Elapsed);
@@ -211,18 +447,11 @@ namespace PapyrusCs
             IRenderStrategy strat = null;
             switch (options.Strategy)
             {
-                case Strategy.ParallelFor:
-                    strat = new ParallelForRenderStrategy<Bitmap>(new SystemDrawing());
-                    break;
-                case Strategy.SingleFor:
-                    strat = new SingleForRenderStrategy<Bitmap>(new SystemDrawing());
-                    break;
                 case Strategy.Dataflow:
+                default:
                     strat = new DataFlowStrategy<Bitmap>(new SystemDrawing());
                     break;
-                default:
-                    strat = new SingleForRenderStrategy<Bitmap>(new SystemDrawing());
-                    break;
+               
             }
 
             return strat;
@@ -231,7 +460,7 @@ namespace PapyrusCs
         private static void ConfigureStrategy(IRenderStrategy strat, Options options,
             HashSet<LevelDbWorldKey2> allSubChunks,
             int extendedDia, int zoom, World world, Dictionary<string, Texture> textures, int tileSize,
-            int chunksPerDimension, int chunkSize,
+            int chunkSize,
             int zmin, int zmax, int xmin, int xmax)
         {
             strat.RenderSettings = new RenderSettings()
@@ -242,8 +471,11 @@ namespace PapyrusCs
                 YMax = options.LimitY,
                 BrillouinJ = options.BrillouinJ,
                 BrillouinDivider = options.BrillouinDivider,
+                BrillouinOffset = options.BrillouinOffset,
                 TrimCeiling = options.TrimCeiling,
+                Profile = options.Profile,
             };
+            strat.ForceOverwrite = options.ForceOverwrite;
             strat.AllWorldKeys = allSubChunks;
             strat.InitialDiameter = extendedDia;
             strat.InitialZoomLevel = (int)zoom;
@@ -253,7 +485,7 @@ namespace PapyrusCs
             strat.TextureDictionary = textures;
             strat.OutputPath = options.OutputPath;
             strat.TileSize = tileSize;
-            strat.ChunksPerDimension = chunksPerDimension;
+            strat.ChunksPerDimension = options.ChunksPerDimension;
             strat.ChunkSize = chunkSize;
             strat.ZMin = zmin;
             strat.ZMax = zmax;
@@ -264,67 +496,65 @@ namespace PapyrusCs
             strat.FileFormat = options.FileFormat;
             strat.FileQuality = options.Quality;
             strat.Dimension = options.Dimension;
+            strat.Profile = options.Profile;
             strat.DeleteExistingUpdateFolder = options.DeleteExistingUpdateFolder;
         }
+      
 
         private static void WriteMapHtml(int tileSize, string outputPath, string mapHtmlFile, Settings[] settings,
-            bool isUpdate)
+            bool isUpdate, bool useLegacyLeaflet)
         {
             try
             {
-                var layernames = new string[] { "Overworld", "Nether", "End" };
-                var mapHtmlContext = File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "map.thtml"));
-
-                var layertemplate = "var mapdata%dim% = L.tileLayer('./%path%/{z}/{x}/{y}.%fileformat%', { \n" +
-                    "attribution: '<a href=\"https://github.com/mjungnickel18/papyruscs\">PapyrusCS</a>',\n" +
-                    "minNativeZoom: %minnativezoom%,\n" +
-                    "minZoom: %minzoom%,\n" +
-                    "maxNativeZoom: %maxnativezoom%,\n"+
-                    "maxZoom: %maxzoom%,\n"+
-                    "noWrap: true,\n"+
-                    "tileSize: %tilesize%,\n"+
-                "});";
-
-                var minZoom = settings.Select(x => x.MinZoom).Min();
-
-                StringBuilder sb = new StringBuilder();
-                foreach (var setting in settings)
+                var layernames = new Dictionary<string, string>
                 {
-                    var newlayer = layertemplate;
+                    { "dim0", "Overworld" },
+                    { "dim0_underground", "Underground" },
+                    { "dim0_aquatic", "Aquatic" },
+                    { "dim0_ore", "Ores" },
+                    { "dim0_stronghold", "Strongholds" },
+                    { "dim1", "Nether" },
+                    { "dim2", "The End" },
+                };
 
-                    newlayer = newlayer.Replace("%maxnativezoom%", setting.MaxZoom.ToString());
-                    newlayer = newlayer.Replace("%maxzoom%", (setting.MaxZoom + 2).ToString());
-                    newlayer = newlayer.Replace("%minnativezoom%", (setting.MinZoom).ToString());
-                    newlayer = newlayer.Replace("%minzoom%", (minZoom).ToString());
-                    newlayer = newlayer.Replace("%tilesize%", (tileSize).ToString());
-                    newlayer = newlayer.Replace("%fileformat%", setting.Format);
-                    newlayer = newlayer.Replace("%path%", $"dim{setting.Dimension}");
-                    newlayer = newlayer.Replace("%dim%", setting.Dimension.ToString());
+                var mapHtmlContext = File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, useLegacyLeaflet ? "map.leaflet.thtml" : "map.thtml"));
 
-                    sb.AppendLine(newlayer);
-                }
+                Func<Settings, string> getDimWithProfile = (Settings setting) => "dim" + setting.Dimension + (string.IsNullOrEmpty(setting.Profile) ? "" : $"_{setting.Profile}");
 
-                sb.AppendLine("var baseMaps = {");
-                foreach (var s in settings)
+                var layersdef = settings.ToDictionary(
+                    getDimWithProfile, 
+                    setting => new LayerDef
+                    {
+                        name = layernames.ContainsKey(getDimWithProfile(setting)) ? layernames[getDimWithProfile(setting)] : $"Dimension{setting.Dimension}_{setting.Profile}",
+                        attribution = "Generated by <a href=\"https://github.com/mjungnickel18/papyruscs\">PapyrusCS</a>",
+                        minNativeZoom = setting.MinZoom,
+                        maxNativeZoom = setting.MaxZoom,
+                        noWrap = true,
+                        tileSize = tileSize,
+                        folder = "dim" + setting.Dimension + (string.IsNullOrEmpty(setting.Profile) ? "" : $"_{setting.Profile}"),
+                        fileExtension = setting.Format,
+                    }
+                );
+
+                var globalconfig = new GlobalConfig
                 {
-                    var dimName = layernames.Length > s.Dimension ? layernames[s.Dimension] : $"Dimension{s.Dimension}";
-                    sb.AppendFormat("\"{0}\": mapdata{1},", dimName, s.Dimension);
-                }
-                sb.AppendLine("}");
+                    factor = (Math.Pow(2, settings.First().MaxZoom - 4)),
+                    globalMaxZoom = settings.First(x => x.Dimension == settings.Min(y => y.Dimension)).MaxZoom,
+                    globalMinZoom = settings.First(x => x.Dimension == settings.Min(y => y.Dimension)).MinZoom,
+                    tileSize = tileSize,
+                    blocksPerTile = tileSize/16
+                };
 
-                sb.AppendLine($"L.control.layers(baseMaps).addTo(map);");
+                mapHtmlContext = mapHtmlContext.Replace(
+                    "// # INJECT DATA HERE", 
+                    "layers = " + JsonConvert.SerializeObject(layersdef) + "; \r\n"+
+                    "config = " + JsonConvert.SerializeObject(globalconfig) + ";");
 
-                sb.AppendFormat("mapdata{0}.addTo(map);", settings.Min(x => x.Dimension));
-
-
-                mapHtmlContext = mapHtmlContext.Replace("%layers%", sb.ToString());
-                mapHtmlContext = mapHtmlContext.Replace("%globalminzoom%", settings.First(x => x.Dimension == settings.Min(y=>y.Dimension)).MinZoom.ToString());
-                mapHtmlContext = mapHtmlContext.Replace("%factor%", (Math.Pow(2, settings.First().MaxZoom - 4)).ToString(CultureInfo.InvariantCulture));
-
-
+                Directory.CreateDirectory(Path.Combine(outputPath, "map"));
                 File.WriteAllText(Path.Combine(outputPath, "map", mapHtmlFile), mapHtmlContext);
                 if (isUpdate)
                 {
+                    Directory.CreateDirectory(Path.Combine(outputPath, "update"));
                     File.WriteAllText(Path.Combine(outputPath, "update", mapHtmlFile), mapHtmlContext);
                 }
             }
@@ -390,5 +620,6 @@ namespace PapyrusCs
 
 
     }
+
 }
 

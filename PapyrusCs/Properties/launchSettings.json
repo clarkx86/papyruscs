@@ -2,7 +2,7 @@
   "profiles": {
     "PapyrusCs": {
       "commandName": "Project",
-      "commandLineArgs": "-w \"C:\\papyruscs\\world_bedrock_31052019\\db\"  --dim 1 --threads 8 --htmlfile index.html --deleteexistingupdatefolder --limitx -8,7 --limitz -8,10",
+      "commandLineArgs": "-w \"C:\\papyruscs\\world_bedrock\" -o \"C:\\papyrus\\homeworld_ts4_net3\" --chunksperdimension 4 -f png --dim 0 --htmlfile index.html ",
       "workingDirectory": "c:\\temp"
     }
   }

@@ -1,9 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Collections.Immutable;
-using System.Drawing;
-using System.Runtime.InteropServices;
 using Maploader.Renderer;
 using Maploader.Renderer.Texture;
 using Maploader.World;
@@ -36,6 +33,9 @@ namespace PapyrusCs.Strategies
         int Dimension { get; set; }
         bool IsUpdate { get; }
         bool DeleteExistingUpdateFolder { get; set; }
+        string Profile { get; set; }
+        bool ForceOverwrite { get; set; }
+
         void RenderInitialLevel();
         void RenderZoomLevels();
 
