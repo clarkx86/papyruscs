@@ -2,6 +2,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -69,11 +70,11 @@ namespace PapyrusCs.Strategies.Dataflow
             World.ChunkPool = new ChunkPool();
             graphics.DefaultQuality = FileQuality;
           
+            Console.Write("Grouping subchunks... ");
 
             var keysByXZ = AllWorldKeys.Where(c => c.X <= XMax && c.X >= XMin && c.Z <= ZMax && c.Z >= ZMin)
                 .GroupBy(x => x.XZ);
 
-            Console.Write("Grouping subchunks... ");
             List<GroupedChunkSubKeys> chunkKeys = new List<GroupedChunkSubKeys>();
             foreach (var chunkGroup in keysByXZ)
             {
@@ -82,20 +83,28 @@ namespace PapyrusCs.Strategies.Dataflow
 
             Console.WriteLine(chunkKeys.Count);
 
+            AllWorldKeys.Clear();
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+
+
             var t = Math.Max(1, this.RenderSettings.MaxNumberOfThreads);
 
             var tsave = FileFormat == "webp" ? t : 2;
 
             var getOptions = new ExecutionDataflowBlockOptions()
-                {BoundedCapacity = 2*t, EnsureOrdered = false, MaxDegreeOfParallelism = 1};
+                {BoundedCapacity = Math.Min(2*t, RenderSettings.MaxNumberOfQueueEntries), EnsureOrdered = false, MaxDegreeOfParallelism = 1};
             var bitmapOptions = new ExecutionDataflowBlockOptions()
-                {BoundedCapacity = 2 * t, EnsureOrdered = false, MaxDegreeOfParallelism = t };
+                {BoundedCapacity = Math.Min(2 * t, RenderSettings.MaxNumberOfQueueEntries), EnsureOrdered = false, MaxDegreeOfParallelism = t };
             var saveOptions = new ExecutionDataflowBlockOptions()
-                {BoundedCapacity = 2 * t, EnsureOrdered = false, MaxDegreeOfParallelism = tsave};
+                {BoundedCapacity = Math.Min(2 * t, RenderSettings.MaxNumberOfQueueEntries), EnsureOrdered = false, MaxDegreeOfParallelism = tsave};
             var dbOptions = new ExecutionDataflowBlockOptions()
-                {BoundedCapacity = 2 * t, EnsureOrdered = false, MaxDegreeOfParallelism = 1};
+                {BoundedCapacity = Math.Min(2 * t, RenderSettings.MaxNumberOfQueueEntries), EnsureOrdered = false, MaxDegreeOfParallelism = 1};
+            
+            
             var groupedToTiles = chunkKeys.GroupBy(x => x.Subchunks.First().Value.GetXZGroup(ChunksPerDimension))
                 .ToList();
+
             Console.WriteLine($"Grouped by {ChunksPerDimension} to {groupedToTiles.Count} tiles");
             var average = groupedToTiles.Average(x => x.Count());
             Console.WriteLine($"Average of {average:0.0} chunks per tile");
@@ -212,6 +221,10 @@ namespace PapyrusCs.Strategies.Dataflow
 
             while (sourceZoomLevel > NewLastZoomLevel)
             {
+                // Force garbage collection (may not be necessary)
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+
                 var destDiameter = sourceDiameter / 2;
                 var sourceZoom = sourceZoomLevel;
                 var destZoom = sourceZoomLevel - 1;
@@ -278,6 +291,12 @@ namespace PapyrusCs.Strategies.Dataflow
                                     }
 
                                     SaveBitmap(destZoom, x / 2, z / 2, isUpdate, bfinal);
+                                }
+
+                                // Dispose of any bitmaps, releasing memory
+                                foreach (var bitmap in new[] { b1, b2, b3, b4, bfinal }.OfType<IDisposable>())
+                                {
+                                    bitmap.Dispose();
                                 }
                             }
                         }

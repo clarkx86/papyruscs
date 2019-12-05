@@ -18,6 +18,8 @@ using Newtonsoft.Json;
 using PapyrusCs.Database;
 using PapyrusCs.Strategies;
 using PapyrusCs.Strategies.Dataflow;
+using SkiaSharp;
+using SkiaSharp = Maploader.Renderer.Imaging.SkiaSharp;
 
 namespace PapyrusCs
 {
@@ -292,7 +294,7 @@ namespace PapyrusCs
             catch (Exception)
             {
                 Console.WriteLine(
-                    $"The value '{options.LimitX}' for the LimitZ parameter is not valid. Try something like -10,10");
+                    $"The value '{options.LimitX}' for the LimitX parameter is not valid. Try something like -10,10");
                 return -1;
             }
 
@@ -381,9 +383,15 @@ namespace PapyrusCs
             allSubChunks = Enumerable.ToHashSet(keys.Select(x => new LevelDbWorldKey2(x))
                     .Where(k => constraintX(k) && constraintZ(k)));
 
+
             _totalChunk = allSubChunks.GroupBy(x => x.XZ).Count();
+
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+
             Console.WriteLine($"Total Chunk count {_totalChunk}");
             Console.WriteLine();
+
 
             xmin = allSubChunks.Min(x => x.X);
             xmax = allSubChunks.Max(x => x.X);
@@ -449,7 +457,8 @@ namespace PapyrusCs
             {
                 case Strategy.Dataflow:
                 default:
-                    strat = new DataFlowStrategy<Bitmap>(new SystemDrawing());
+                    //strat = new DataFlowStrategy<SKBitmap>(new Maploader.Renderer.Imaging.SkiaSharp());
+                    strat = new DataFlowStrategy<Bitmap>(new Maploader.Renderer.Imaging.SystemDrawing());
                     break;
                
             }
@@ -468,6 +477,7 @@ namespace PapyrusCs
                 RenderCoordinateStrings = options.RenderCoords,
                 RenderMode = options.RenderMode,
                 MaxNumberOfThreads = options.MaxNumberOfThreads,
+                MaxNumberOfQueueEntries = options.MaxNumberOfQueueEntries,
                 YMax = options.LimitY,
                 BrillouinJ = options.BrillouinJ,
                 BrillouinDivider = options.BrillouinDivider,
