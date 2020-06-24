@@ -1,13 +1,14 @@
 ﻿using System.Runtime.InteropServices;
 using CommandLine;
 using Maploader.Renderer;
+using PapyrusAlgorithms.Strategies;
 
 namespace PapyrusCs
 {
     [Verb("test")]
     public class TestOptions
     {
-        [Option('w', "world", Required = true, HelpText = "Sets the path the Minecraft Bedrock Edition Map")]
+        [Option('w', "world", Required = true, HelpText = "Sets the path the Minecraft Bedrock Edition Map, looks in default location if not specified")]
         public string MinecraftWorld { get; set; }
 
         [Option("db", Required = false, HelpText = "Tests Db Read")]
@@ -37,10 +38,10 @@ namespace PapyrusCs
     [Verb("map")]
     public class Options
     {
-        [Option('w', "world", Required = true, HelpText = "Sets the path the Minecraft Bedrock Edition Map")]
+        [Option('w', "world", Required = false, HelpText = "Sets the path the Minecraft Bedrock Edition Map")]
         public string MinecraftWorld { get; set; }
 
-        [Option('o', "output", Required = false, HelpText = "Sets the output path for the generated map tiles", Default = "generatedmap")]
+        [Option('o', "output", Required = false, HelpText = "Sets the output path for the generated map tiles")]
         public string OutputPath { get; set; }
 
         [Option("htmlfile", Required = false, HelpText = "Sets name of html map file", Default = "map.html")]
@@ -109,11 +110,14 @@ namespace PapyrusCs
         [Option("deleteexistingupdatefolder", Required = false, Default = false, HelpText = "Delete an existing update/dimX folder right before creating a possible new update")]
         public bool DeleteExistingUpdateFolder { get; set; }
 
-        [Option("use_leaflet_legacy", Required = false, Default = false, HelpText = "Use the legacy leaflet.js map renderer instead of the new OpenLayers version")]
-        public bool UseLeafletLegacy { get; set; }
-
         [Option("chunksperdimension", Required = false, Default = 2, HelpText = "Sets the chunks per X and Y dimension for the generated tiles. 1 => 1 chunk per tile, 2 => 4 chunks per tile and so on")]
         public int ChunksPerDimension { get; set; }
+
+        [Option("playericons", Required = false, Default = false, HelpText = "Renders player markers on the map. Player names must be manually entered. After running, edit '/map/playersData.js' text file to modify player names and colors.")]
+        public bool ShowPlayerIcons { get; set; }
+
+        [Option("render_map", Required = false, Default = true, HelpText = "Renders the map. This is the main feature of this program. Only disable this in special circumstances, such as if you want to quickly update player markers without updating the map.")]
+        public bool RenderMap { get; set; }
 
 
         // Derivative options
